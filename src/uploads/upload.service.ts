@@ -16,7 +16,6 @@ export class UploadService {
 
       const buffer = await sharp(file.buffer)
         .resize(800)
-        .jpeg({ quality: 80 })
         .png({ quality: 80 })
         .toBuffer();
 
