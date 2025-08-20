@@ -7,30 +7,20 @@ import {
 import { PrismaService } from '../prisma.service';
 import { Prisma } from '@prisma/client';
 import { CreatePostDto } from './create-post.dto';
-import * as fs from 'fs/promises';
 import * as path from 'path';
-import { v4 as uuidv4 } from 'uuid';
 import isValidObjectId from 'src/utils/isValidObjectId';
+import { RedisService } from 'src/redis/redis.service';
+import { UploadService } from 'src/uploads/upload.service';
 
 @Injectable()
 export class PostsService {
   private uploadDir = path.join(process.cwd(), 'uploads');
 
-  async saveFile(file: Express.Multer.File): Promise<string> {
-    try {
-      const ext = path.extname(file.originalname);
-      const filename = `${uuidv4()}${ext}`;
-      const filepath = path.join(this.uploadDir, filename);
-
-      await fs.writeFile(filepath, file.buffer);
-
-      return `/uploads/${filename}`;
-    } catch (error) {
-      throw new InternalServerErrorException('Ошибка при сохранении файла');
-    }
-  }
-
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redisService: RedisService,
+    private readonly uploadService: UploadService,
+  ) {}
 
   async findAll(
     skip = 0,
@@ -59,6 +49,12 @@ export class PostsService {
       ],
     };
 
+    const cacheKey = `posts:${skip}:${take}:${order}:${search}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+
     const [posts, total] = await Promise.all([
       this.prisma.post.findMany({
         where,
@@ -70,6 +66,7 @@ export class PostsService {
     ]);
 
     const result = { posts, total };
+    await this.redisService.set(cacheKey, JSON.stringify(result), 300);
 
     return result;
   }
@@ -111,12 +108,24 @@ export class PostsService {
       this.prisma.post.count({ where }),
     ]);
 
+    const cacheKey = `posts:deleted:${skip}:${take}:${order}:${search}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+
     const result = { posts, total };
+
+    await this.redisService.set(cacheKey, JSON.stringify(result), 300);
 
     return result;
   }
 
   async findOne(id: string) {
+    const cacheKey = `post:${id}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+
     if (!isValidObjectId(id)) {
       throw new BadRequestException('Invalid ID format');
     }
@@ -125,6 +134,8 @@ export class PostsService {
     if (!post || post.deletedAt) {
       throw new NotFoundException('Post not found');
     }
+    await this.redisService.set(cacheKey, JSON.stringify(post), 300);
+
     return post;
   }
 
@@ -136,7 +147,7 @@ export class PostsService {
     let imagePath = '';
 
     if (data.image) {
-      imagePath = await this.saveFile(data.image);
+      imagePath = await this.uploadService.saveFile(data.image);
     }
 
     const requiredFields = ['title', 'themeId'];
@@ -167,6 +178,7 @@ export class PostsService {
       },
     });
 
+    await this.redisService.delPattern('posts:*');
     return post;
   }
 
@@ -187,6 +199,8 @@ export class PostsService {
       data: { deletedAt: new Date() },
     });
 
+    await this.redisService.delPattern('posts:*');
+    await this.redisService.delPattern(`post:${id}`);
     return { message: `Post ${id} deleted successfully` };
   }
 
@@ -208,7 +222,7 @@ export class PostsService {
 
     let imagePath = existingPost.image;
     if (image) {
-      imagePath = await this.saveFile(image);
+      imagePath = await this.uploadService.saveFile(image);
     }
 
     if (typeof data.tags === 'string') {
@@ -251,6 +265,8 @@ export class PostsService {
         where: { id },
         data: updateData,
       });
+      await this.redisService.delPattern('posts:*');
+      await this.redisService.delPattern(`post:${id}`);
       return updatedPost;
     } catch (error) {
       throw new BadRequestException('Ошибка при обновлении поста');
@@ -273,6 +289,7 @@ export class PostsService {
       },
     });
 
+    await this.redisService.delPattern(`post:${id}`);
     return updatedPost;
   }
 
@@ -290,7 +307,8 @@ export class PostsService {
       where: { id },
       data: { deletedAt: null },
     });
-
+    await this.redisService.delPattern('posts:*');
+    await this.redisService.delPattern(`post:${id}`);
     return restoredPost;
   }
 }

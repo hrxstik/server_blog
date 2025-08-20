@@ -7,10 +7,14 @@ import { PrismaService } from '../prisma.service';
 import { Prisma } from '@prisma/client';
 import { CreateNoteDto } from './create-note.dto';
 import isValidObjectId from 'src/utils/isValidObjectId';
+import { RedisService } from 'src/redis/redis.service';
 
 @Injectable()
 export class NotesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redisService: RedisService,
+  ) {}
 
   async findAll(
     skip = 0,
@@ -35,6 +39,12 @@ export class NotesService {
       ],
     };
 
+    const cacheKey = `notes:${skip}:${take}:${order}:${search}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+
     const [notes, total] = await Promise.all([
       this.prisma.note.findMany({
         where,
@@ -44,8 +54,10 @@ export class NotesService {
       }),
       this.prisma.note.count({ where }),
     ]);
+    const result = { notes, total };
+    await this.redisService.set(cacheKey, JSON.stringify(result), 300);
 
-    return { notes, total };
+    return result;
   }
 
   async findAllDeleted(
@@ -81,10 +93,24 @@ export class NotesService {
       this.prisma.note.count({ where }),
     ]);
 
-    return { notes, total };
+    const cacheKey = `notes:deleted:${skip}:${take}:${order}:${search}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+
+    const result = { notes, total };
+
+    await this.redisService.set(cacheKey, JSON.stringify(result), 300);
+
+    return result;
   }
 
   async findOne(id: string) {
+    const cacheKey = `note:${id}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+
     if (!isValidObjectId(id)) {
       throw new BadRequestException('Invalid ID format');
     }
@@ -96,7 +122,7 @@ export class NotesService {
     if (!note || note.deletedAt) {
       throw new NotFoundException('Note not found');
     }
-
+    await this.redisService.set(cacheKey, JSON.stringify(note), 300);
     return note;
   }
 
@@ -127,6 +153,7 @@ export class NotesService {
       },
     });
 
+    await this.redisService.delPattern('notes:*');
     return note;
   }
   async delete(id: string) {
@@ -146,6 +173,7 @@ export class NotesService {
       data: { deletedAt: new Date() },
     });
 
+    await this.redisService.delPattern(`note:${id}`);
     return { message: `Note ${id} deleted successfully` };
   }
 
@@ -180,6 +208,7 @@ export class NotesService {
         where: { id },
         data,
       });
+      await this.redisService.delPattern(`notes:*`);
       return updatedNote;
     } catch (error) {
       throw new BadRequestException('Ошибка при обновлении заметки');
@@ -200,7 +229,7 @@ export class NotesService {
         views: { increment: 1 },
       },
     });
-
+    await this.redisService.delPattern(`note:${id}`);
     return updatedNote;
   }
 
@@ -218,6 +247,7 @@ export class NotesService {
       data: { deletedAt: null },
     });
 
+    await this.redisService.delPattern(`note:${id}`);
     return restoredNote;
   }
 }
