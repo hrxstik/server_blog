@@ -6,10 +6,10 @@ export class RedisService {
   private client: Redis;
 
   constructor() {
-    this.client = new Redis({
-      host: 'redis',
-      port: 6379,
-    });
+    const host = process.env.REDIS_HOST || 'localhost';
+    const port = parseInt(process.env.REDIS_PORT!, 10) || 6379;
+
+    this.client = new Redis({ host, port });
     this.client.on('connect', () => {
       console.log('Redis client connected');
     });
