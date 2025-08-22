@@ -15,7 +15,7 @@ export class UploadService {
       const filepath = path.join(this.uploadDir, filename);
 
       const buffer = await sharp(file.buffer)
-        .resize(800)
+        .resize({ height: 800 })
         .png({ quality: 80 })
         .toBuffer();
 
